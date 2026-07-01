@@ -482,9 +482,15 @@ def parse_questions_from_pages(page_data: list, pdf_path: str = None) -> dict:
     qs   = {}
     cur  = 0
     maxq = 0
-    _unattached_omits = []   # (q_num, note_excerpt) notes we could not confidently attach
+    _unattached_omits = []   # (kept for compatibility; no longer populated)
     _ul  = _detect_underline_answers(pdf_path) if pdf_path else {}
     _rb  = _detect_red_boxes(pdf_path)         if pdf_path else {}
+    # True if this file contains ANY omit-type signal (a "not graded / credit
+    # to all" note, or a detected red box). We never guess WHICH question it
+    # applies to — we only report, at the file level, that the PDF should be
+    # checked by hand. Seed from red-box detection; the parse loop also sets it
+    # when it sees an omit phrase in a question block.
+    _file_has_omit_signal = bool(_rb)
 
     for i in range(1, len(raw)-1, 2):
         q_num = raw[i].strip(); content = raw[i+1]
@@ -506,11 +512,13 @@ def parse_questions_from_pages(page_data: list, pdf_path: str = None) -> dict:
         _rb_flag = _rb.get(q_num)
         _two_txt = bool(re.search(r'two\s+answers?\s+are\s+correct|both.*correct|two\s+correct\s+answers?',content,re.I))
         # Provisional flag for the no-choice / free-response branches below
-        # (a red-box OMIT flag from geometry is always trustworthy; a bare
-        # text note in a question with no choices is treated conservatively).
-        omit_flag = (_rb_flag=='omit')
-        _pending_omit = None  # (q_num, note_excerpt) when a note can't be
-                              # confidently attached — surfaced for review
+        # Omit is NEVER auto-attached to a question (see note in the choices
+        # branch below). If a red box or omit phrase is present, we only flag
+        # the file for manual review. Every question's omit stays False.
+        if not _two_txt and (_rb_flag=='omit' or bool(OMIT_PHRASES.search(content))):
+            _file_has_omit_signal = True
+        omit_flag = False
+        _pending_omit = None
 
         def _nc(rx,txt):
             mm=rx.search(txt)
@@ -623,56 +631,18 @@ def parse_questions_from_pages(page_data: list, pdf_path: str = None) -> dict:
 
         correct = ",".join(sorted(cs)) if cs else "Unknown"
         if choices:
-            # Decide omit by WHERE the note sits. A "not graded / credit to all"
-            # note that appears at or after this question's A-E choices belongs
-            # to this question (e.g. a note printed beneath the answers). A note
-            # found ONLY in the prompt — before any choice — is a red box that
-            # floated in from a visually-adjacent question and must not create a
-            # false omit here; it is recorded for manual review instead.
-            _prompt_part = content[:mf.start()]
-            _choice_part = content[mf.start():]
-            _cm = OMIT_PHRASES.search(_choice_part)
-            _note_in_prompt  = bool(OMIT_PHRASES.search(_prompt_part))
-            # A note only auto-omits THIS question when it sits in the choices
-            # region, is NOT past an end-of-exam boundary, and does NOT contain
-            # cross-reference language showing it actually describes a DIFFERENT
-            # question/form ("on other versions", "corresponding question", "no
-            # salt bridge", "mistake in the line notation", etc.). Those float
-            # in reading order and would otherwise create false omits on the
-            # wrong master row, so they are recorded for manual review instead.
-            _CROSSREF = re.compile(
-                r'other\s+version|corresponding\s+question|on\s+other\s+form|'
-                r'different\s+version|no\s+salt\s+bridge|answer\s+is\s+not\s+there|'
-                r'mistake\s+in\s+the\s+line|has\s+a\s+mistake|on\s+another\s+form|'
-                r'not\s+one\s+of\s+the\s+\d*\s*choices|answer\s+is\s+not\s+one\s+of|'
-                r'correct\s+answer\s+is\s+not|should\s+be\s+["\u201c]',
-                re.I)
-            _note_in_choices = False
-            if _cm:
-                _win = _choice_part[max(0,_cm.start()-150):_cm.end()+150]
-                _between = _choice_part[:_cm.start()]
-                _boundary = 'END OF QUESTIONS' in _between.upper()
-                _crossref = bool(_CROSSREF.search(_win)) or bool(_CROSSREF.search(_prompt_part))
-                _note_in_choices = (not _boundary) and (not _crossref)
-            # Also disqualify a prompt-region note that carries cross-ref text.
-            if _note_in_prompt and _CROSSREF.search(_prompt_part):
-                _note_in_prompt = False
-                _prompt_note_floating = True
-            else:
-                _prompt_note_floating = False
-            if _rb_flag=='omit':
-                omit_flag = True
-            elif _note_in_choices and not _two_txt:
-                omit_flag = True
-            elif (bool(OMIT_PHRASES.search(_prompt_part)) or _cm) and not _two_txt:
-                omit_flag = False
-                _src = _prompt_part if OMIT_PHRASES.search(_prompt_part) else _choice_part
-                _m = OMIT_PHRASES.search(_src)
-                _pending_omit = (q_num, _src[max(0,_m.start()-10):_m.start()+70].strip())
+            # NEVER auto-attach an omit to a specific question — attaching a
+            # note to a question from PDF text is unreliable and has repeatedly
+            # marked the wrong row. If an omit-type note (or red box) appears
+            # anywhere in this file, we only record that fact at the FILE level
+            # so the issues report can tell a human to open the PDF and check
+            # it. No question number is guessed, and the Excel OMIT column is
+            # left blank for every row. (Two-answer notes are not omit signals.)
+            if not _two_txt and (_rb_flag=='omit' or
+                                 bool(OMIT_PHRASES.search(content))):
+                _file_has_omit_signal = True
             qs[q_num]={'prompt':prompt,'choices':choices,'correct':correct,
-                       'omit':omit_flag,'_norm':_norm(prompt),'_tail':_tail(prompt)}
-            if _pending_omit:
-                _unattached_omits.append(_pending_omit)
+                       'omit':False,'_norm':_norm(prompt),'_tail':_tail(prompt)}
 
     # Continuity check
     if qs:
@@ -682,11 +652,11 @@ def parse_questions_from_pages(page_data: list, pdf_path: str = None) -> dict:
         lbl=os.path.basename(pdf_path) if pdf_path else "<unnamed>"
         if gaps:  _logger.warning("%s GAPS: %s",lbl,gaps)
         if jumps: _logger.warning("%s JUMPS: %s",lbl,"; ".join(f"{a} then {b}" for a,b in jumps))
-    # Record any omit notes we could not confidently attach to a specific
-    # question in a side-channel keyed by file, so the caller can flag them for
-    # manual review rather than silently dropping a real "not graded" note.
-    if pdf_path and _unattached_omits:
-        _UNATTACHED_OMITS[os.path.basename(pdf_path)] = _unattached_omits
+    # Record, at the FILE level only, whether an omit-type signal was seen.
+    # No question number is stored — the report just tells the reviewer to
+    # open this PDF and check it by hand.
+    if pdf_path and _file_has_omit_signal:
+        _UNATTACHED_OMITS[os.path.basename(pdf_path)] = True
     return qs
 
 
@@ -949,12 +919,12 @@ def build_mapping_dataframe(form_data: dict, meta: dict,
         mc=v['choices']
         # OMIT belongs to THIS master row only. One master row represents one
         # question across all forms (Form A #2 == Form B #7 == ... are the same
-        # row), so if that question was flagged not-graded on any of its forms,
-        # this single row is OMIT="Yes" — and no OTHER master row is affected.
-        any_omit=v.get('omit',False) or any(
-            fd.get('omit',False) for fd in v['form_data'].values()
-            if fd.get('q_num') not in ('MISSING','N/A'))
-        row={"OMIT":"Yes" if any_omit else "","Semester":meta.get("semester",""),
+        # OMIT is never auto-written. Omit/not-graded/credit notes and red
+        # boxes are unreliable to attach to the correct question from the PDF
+        # text, so instead of guessing (and sometimes marking the wrong row),
+        # the OMIT column is left blank and any detected omit-type note is
+        # reported at the FILE level in the issues report for manual review.
+        row={"OMIT":"","Semester":meta.get("semester",""),
              "Course":meta.get("course",""),"Exam":meta.get("exam",""),
              "Master Question Number":mn,"Variant":vlbl,"Question Prompt":v['prompt']}
         for L in ['A','B','C','D','E']: row[f"Choice {L}"]=mc.get(L,"")
@@ -1165,7 +1135,7 @@ def process_pdfs(pdf_map,meta_override,answer_key=None,out_path="Exam_Mapping.xl
             mk_u =sorted((k for k in unknown if qs[k]['choices'] and any(str(v).strip() for v in qs[k]['choices'].values())),key=int)
             entry.update({"questions":len(qs),"unknown":len(unknown),"gaps":gaps,"jumps":jumps,
                           "mark_unknown":mk_u,"img_unknown":img_u,"fr_unknown":fr_u,
-                          "review_omits":_UNATTACHED_OMITS.get(os.path.basename(fpath),[]),
+                          "has_omit_signal":bool(_UNATTACHED_OMITS.get(os.path.basename(fpath),False)),
                           "semester":shared_meta.get("semester",""),"exam":shared_meta.get("exam","")})
             if not shared_meta.get("semester"): entry["warnings"].append("Semester not detected in PDF header")
             if gaps:  entry["warnings"].append(f"Missing question numbers: {gaps}")
@@ -1239,21 +1209,23 @@ def write_issues_report(report_path: str, semester: str, exam_dir: str,
 
     any_issue = False
 
-    # ── Omit notes that could not be auto-attached (need a human decision) ─────
-    review_omit_entries = [(e.get("form","?"), e.get("file","?"), e.get("review_omits",[]))
-                           for e in file_entries if e.get("review_omits")]
-    if review_omit_entries:
+    # ── Files where an omit-type note or red box was detected ─────────────────
+    # We do NOT try to say which question it applies to — attaching it from the
+    # PDF text is unreliable. We only tell the reviewer which files to open and
+    # check by hand for a "not graded / credit to all" question.
+    omit_files = [(e.get("form","?"), e.get("file","?"))
+                  for e in file_entries if e.get("has_omit_signal")]
+    if omit_files:
         any_issue = True
-        total = sum(len(n) for _,_,n in review_omit_entries)
-        lines.append(f"OMIT NOTES NEEDING MANUAL REVIEW ({total}) — a 'not graded / "
-                     "credit to all' note was found but could NOT be confidently")
-        lines.append("  tied to a specific question (it floats at the end of the exam")
-        lines.append("  or beside a different question). Check the PDF and set OMIT=Yes")
-        lines.append("  by hand on the correct master row(s):")
-        for form, fname, notes in review_omit_entries:
-            for qn, excerpt in notes:
-                clean_ex = re.sub(r'\s+', ' ', excerpt).strip()
-                lines.append(f"    Form {form} (near Q{qn}): \"{clean_ex}\"")
+        lines.append(f"POSSIBLE OMITTED QUESTION(S) — CHECK THESE FILES BY HAND "
+                     f"({len(omit_files)} file(s)):")
+        lines.append("  A red box and/or a 'not graded / credit to all' note was")
+        lines.append("  detected in the file(s) below. The tool does NOT mark OMIT")
+        lines.append("  automatically (it cannot reliably tell which question the")
+        lines.append("  note belongs to). Open each PDF, find the affected question,")
+        lines.append("  and set OMIT by hand on the correct master row:")
+        for form, fname in omit_files:
+            lines.append(f"    Form {form}: {fname}")
         lines.append("")
 
 

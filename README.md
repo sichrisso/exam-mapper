@@ -13,12 +13,13 @@ semester and exam:
 
 1. **`<Semester>_<Exam>_Result.xlsx`** — the mapping. One row per master
    question, with each form's question number, the choice-order permutation,
-   the detected correct answer, and an OMIT column.
+   and the detected correct answer.
 2. **`<Semester>_<Exam>_Result_ISSUES.txt`** — a review report listing
    everything that might need a human check before the mapping is trusted
    (missing questions, number jumps, undetected answers, likely image
-   questions, and omit notes that could not be auto-attached). When an exam is
-   clean it still writes a short "No issues detected" confirmation.
+   questions, and files that appear to contain an omitted / not-graded
+   question). When an exam is clean it still writes a short "No issues
+   detected" confirmation.
 
 ---
 
@@ -67,10 +68,6 @@ python app.py
 Then open `http://localhost:5000`, drop in the PDF forms for one exam, and
 download the mapping, the issues report, and (if any) the diagnostic log.
 
-The web app imports the parser as `exam_mapper`, so the parser file must be
-named `exam_mapper.py` alongside `app.py`, with `index.html` in a `templates/`
-folder.
-
 ---
 
 ## File naming for forms
@@ -82,8 +79,8 @@ filename is ambiguous. All of these are recognised:
 - `v001.pdf`, `v002.pdf` (numeric versions)
 - `vEarly A.pdf`, `vLATE B.pdf` (early/late sittings)
 
-Forms are assigned letters in order (early → numbered → late), so an exam with
-seven versions still maps cleanly to A–G.
+Forms are assigned letters in order (early -> numbered -> late), so an exam with
+seven versions still maps cleanly to A-G.
 
 ---
 
@@ -104,34 +101,73 @@ glyphs, underlines, or an explicit "Answer: X" note. Multi-answer questions
 options (or ask the reverse of the same concept). These are split into separate
 variant rows rather than being silently merged.
 
-**OMIT (not-graded / credit-to-all).** When a form's key marks a question
-"not graded", "omit", "credit to all", "everyone gets credit", etc., that
-question's row is flagged `OMIT = Yes`. See the important caveat below.
+**Possible omitted questions.** When a form's key contains a red box or a
+"not graded / omit / credit to all / everyone gets credit" note, the tool
+**does not mark OMIT automatically** — see the section below.
+
+---
+
+## OMIT is not auto-marked — files are flagged for review
+
+The `OMIT` column in the Excel is intentionally left **blank on every row**.
+Professors write not-graded / credit-to-all notes in many places: sometimes
+inside a question, but often as a floating red box at the end of the exam, or
+next to it. Whenever a red box and/or an omit-type note is detected anywhere in a
+file, the issues gets reported for manual review.
+
+---
+
+## The issues report
+
+Each exam's `*_ISSUES.txt` collects everything that could keep the mapping from
+being complete or correct:
+
+- **Possible omitted questions** — files where a red box / not-graded note was
+  detected and need a manual OMIT decision.
+- **Missing question numbers** — a form skips a number that other forms have.
+- **Number-sequence breaks** — a form jumps (e.g. 5 then 7), suggesting a
+  dropped question.
+- **Possible image/diagram questions** — the answer choices are pictures
+  (Lewis structures, orbital diagrams, etc.) and cannot be read as text; verify
+  these against the PDF.
+- **Answer mark not detected** — the key may be unmarked for that question.
+- **MISSING cells** — a form genuinely has no counterpart for a question.
+
+A clean exam gets a short confirmation instead.
 
 ---
 
 ## Column reference (Excel)
 
-| Column                   | Meaning                                                                      |
-| ------------------------ | ---------------------------------------------------------------------------- |
-| `OMIT`                   | `Yes` if the question was confidently detected as not graded / credit-to-all |
-| `Master Question Number` | The canonical question id (follows the first form's numbering)               |
-| `Variant`                | Blank, or `V1 (A/C)` style label when a question has form-specific variants  |
-| `Question Prompt`        | The question text                                                            |
-| `Choice A`–`Choice E`    | The master answer options                                                    |
-| `Form X #`               | That form's number for this question (`MISSING` / `N/A` when absent)         |
-| `Form X Choice Order`    | How the master choices were reordered on that form                           |
-| `Form X Correct Choice`  | The detected answer on that form (`Unknown` if undetected)                   |
+| Column                   | Meaning                                                                     |
+| ------------------------ | --------------------------------------------------------------------------- |
+| `OMIT`                   | Always blank — omits are flagged in the issues report for manual entry      |
+| `Master Question Number` | The canonical question id (follows the first form's numbering)              |
+| `Variant`                | Blank, or `V1 (A/C)` style label when a question has form-specific variants |
+| `Question Prompt`        | The question text                                                           |
+| `Choice A`-`Choice E`    | The master answer options                                                   |
+| `Form X #`               | That form's number for this question (`MISSING` / `N/A` when absent)        |
+| `Form X Choice Order`    | How the master choices were reordered on that form                          |
+| `Form X Correct Choice`  | The detected answer on that form (`Unknown` if undetected)                  |
 
 ---
 
 ## Known limitations
 
-- **Scanned / OCR files** often have garbled text;
-  the tool flags them rather than crashing, but their questions may not parse.
-  Re-OCR is the fix.
+- **Scanned / OCR files** often have garbled text; the tool flags them rather
+  than crashing, but their questions may not parse. Re-OCR is the fix.
 - **Image-answer questions** (structures/diagrams as options) cannot have their
   correct answer read from text; they are flagged for manual review.
-- **Floating omit notes** are flagged, not auto-applied.
+- **Omitted / not-graded questions** are never auto-marked. Any file containing
+  a red box or omit-type note is flagged so OMIT can be set by hand.
 
 ---
+
+## Files
+
+| File                   | Purpose                                       |
+| ---------------------- | --------------------------------------------- |
+| `exam_mapper.py`       | The parser/mapper (rename of `match-exam.py`) |
+| `app.py`               | Flask web app                                 |
+| `templates/index.html` | Web front end                                 |
+| `README.md`            | This file                                     |
