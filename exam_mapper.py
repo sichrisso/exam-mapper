@@ -643,7 +643,9 @@ def parse_questions_from_pages(page_data: list, pdf_path: str = None) -> dict:
             _CROSSREF = re.compile(
                 r'other\s+version|corresponding\s+question|on\s+other\s+form|'
                 r'different\s+version|no\s+salt\s+bridge|answer\s+is\s+not\s+there|'
-                r'mistake\s+in\s+the\s+line|has\s+a\s+mistake|on\s+another\s+form',
+                r'mistake\s+in\s+the\s+line|has\s+a\s+mistake|on\s+another\s+form|'
+                r'not\s+one\s+of\s+the\s+\d*\s*choices|answer\s+is\s+not\s+one\s+of|'
+                r'correct\s+answer\s+is\s+not|should\s+be\s+["\u201c]',
                 re.I)
             _note_in_choices = False
             if _cm:
